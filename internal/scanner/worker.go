@@ -67,7 +67,7 @@ func worker(
 		}
 
 		userAgent := getRandomUserAgent(rng)
-		result, bodyContent, err := makeRequest(ctx, url, "GET", userAgent, cfg, client)
+		result, bodyContent, resp, err := makeRequest(ctx, url, "GET", userAgent, cfg, client)
 		stats.IncrementProcessed()
 
 		if err != nil {
@@ -101,7 +101,7 @@ func worker(
 					goto done405
 				default:
 				}
-				methodResult, methodBody, err := makeRequest(ctx, url, method, userAgent, cfg, client)
+				methodResult, methodBody, methodResp, err := makeRequest(ctx, url, method, userAgent, cfg, client)
 				if err == nil && (methodResult.StatusCode == 200 || methodResult.StatusCode == 201 || methodResult.StatusCode == 204) {
 					methodResult.Method = method
 					methodResult.Critical = true
@@ -110,6 +110,10 @@ func worker(
 						methodResult.SecretFound = true
 						methodResult.SecretTypes = secrets
 						stats.IncrementSecrets()
+					}
+
+					if techs := detection.DetectTechNames(methodResp, methodBody); len(techs) > 0 {
+						methodResult.Technologies = techs
 					}
 
 					stats.IncrementFound()
@@ -129,6 +133,13 @@ func worker(
 					result.SecretFound = true
 					result.SecretTypes = secrets
 					stats.IncrementSecrets()
+				}
+			}
+
+			// Detect technologies from response headers, cookies, and body.
+			if resp != nil {
+				if techs := detection.DetectTechNames(resp, bodyContent); len(techs) > 0 {
+					result.Technologies = techs
 				}
 			}
 
@@ -170,10 +181,10 @@ func worker(
 	}
 }
 
-func makeRequest(ctx context.Context, url, method, userAgent string, cfg config.Config, client *transport.Client) (*Result, string, error) {
+func makeRequest(ctx context.Context, url, method, userAgent string, cfg config.Config, client *transport.Client) (*Result, string, *http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	req.Header.Set("User-Agent", userAgent)
@@ -184,7 +195,7 @@ func makeRequest(ctx context.Context, url, method, userAgent string, cfg config.
 
 	resp, body, err := client.DoContext(ctx, req, cfg.RateLimit)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	bodyContent := string(body)
@@ -208,7 +219,7 @@ func makeRequest(ctx context.Context, url, method, userAgent string, cfg config.
 		result.WAFDetected = wafName
 	}
 
-	return result, bodyContent, nil
+	return result, bodyContent, resp, nil
 }
 
 func attemptBypass(ctx context.Context, url, userAgent string, cfg config.Config, client *transport.Client) (*Result, string) {
